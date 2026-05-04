@@ -165,13 +165,13 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
   try {
     const { access_token, instance_url } = await getAccessTokenFromRefresh();
 
-    // Destino UI por defecto
-    const redirectUri =
-      req.query.redirect_uri || 'lightning/page/home';
+    const redirectUri = req.query.redirect_uri;
 
-    const body = new URLSearchParams({
-      redirect_uri: redirectUri
-    });
+    const body = new URLSearchParams();
+
+    if (redirectUri) {
+      body.set('redirect_uri', redirectUri);
+    }
 
     const singleResp = await fetch(
       `${instance_url}/services/oauth2/singleaccess`,
@@ -205,8 +205,8 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
     }
 
     log('✅ frontdoorUrl generado');
-    res.json({ frontdoorUrl, redirectUri });
-  } catch (e) {
+    res.json({frontdoorUrl, redirectUri: redirectUri || null});
+    } catch (e) {
     log('💥 Error en /api/lo2/frontdoor:', e.message);
     res.status(500).json({ error: 'server_error', message: e.message });
   }
