@@ -7,6 +7,10 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+// ------------- CORS ---------------------
+const allowedOrigins = [
+  'https://hoteles-lightningout.web.app'
+];
 
 // ------------- Config Salesforce -----------------
 const LOGIN_URL     = process.env.SF_LOGIN_URL;      // My Domain o sandbox (https://pghsa--devomega.sandbox.my.salesforce.com)
@@ -26,10 +30,20 @@ function log(...args) {
 
 // ------------- CORS muy básico ---------------------
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*'); // Ajusta si quieres restringir
+  const origin = req.headers.origin;
+
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+
+  res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+
   next();
 });
 
