@@ -174,53 +174,42 @@ async function getAccessTokenFromRefresh() {
 }
 
 // ------------- 3) Endpoint para LO2: frontdoor -------
-// Puedes pasar ?redirect_uri=lightning/page/home, lightning/setup/..., etc.
 app.get('/api/lo2/frontdoor', async (req, res) => {
   try {
     const { access_token, instance_url } = await getAccessTokenFromRefresh();
 
-    const redirectUri = req.query.redirect_uri;
-
     const body = new URLSearchParams();
 
-    if (redirectUri) {
-      body.set('redirect_uri', redirectUri);
-    }
-
-    const singleResp = await fetch(
-      `${instance_url}/services/oauth2/singleaccess`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: body.toString()
-      }
-    );
+    const singleResp = await fetch(`${instance_url}/services/oauth2/singleaccess`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    });
 
     const singleData = await singleResp.json();
 
     if (!singleResp.ok) {
-      log('❌ singleaccess KO:', singleResp.status, singleData);
-      return res
-        .status(500)
-        .json({ error: 'singleaccess_failed', detail: singleData });
+      return res.status(500).json(singleData);
     }
 
-    const frontdoorUrl =
-      singleData.frontdoor_uri || singleData.frontdoorUrl;
+    const frontdoorUrl = singleData.frontdoor_uri || singleData.frontdoorUrl;
 
     if (!frontdoorUrl) {
-      log('⚠️ singleaccess sin frontdoor_uri:', singleData);
-      return res
-        .status(500)
-        .json({ error: 'no_frontdoor_in_response', data: singleData });
+      return res.status(500).json({
+        error: 'no_frontdoor_in_response',
+        data: singleData
+      });
     }
 
-    log('✅ frontdoorUrl generado');
-    res.json({frontdoorUrl, redirectUri: redirectUri || null});
-    } catch (e) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+
+    res.json({ frontdoorUrl });
+
+  } catch (e) {
     log('💥 Error en /api/lo2/frontdoor:', e.message);
     res.status(500).json({ error: 'server_error', message: e.message });
   }
