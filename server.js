@@ -257,3 +257,45 @@ app.get('/debug/frontdoor-open', async (req, res) => {
     res.status(500).send(e.message);
   }
 });
+
+// Endpoint que LO2 usará como frontdoor-url
+// LO2 carga esta URL en el iframe → servidor genera OTP al instante → redirect
+app.get('/api/lo2/session', async (req, res) => {
+  try {
+    const { access_token, instance_url } = await getAccessTokenFromRefresh();
+
+    const body = new URLSearchParams({
+      redirect_uri: req.query.redirect_uri || '/lightning/page/home'
+    });
+
+    const singleResp = await fetch(`${instance_url}/services/oauth2/singleaccess`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    });
+
+    const singleData = await singleResp.json();
+
+    if (!singleResp.ok) {
+      return res.status(500).json(singleData);
+    }
+
+    const frontdoorUrl = singleData.frontdoor_uri || singleData.frontdoorUrl;
+
+    if (!frontdoorUrl) {
+      return res.status(500).json({ error: 'no_frontdoor_in_response', data: singleData });
+    }
+
+    // Headers anti-caché para que nunca se reutilice un OTP
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.redirect(302, frontdoorUrl);
+
+  } catch (e) {
+    log('💥 Error en /api/lo2/session:', e.message);
+    res.status(500).send(e.message);
+  }
+});
