@@ -174,12 +174,15 @@ async function getAccessTokenFromRefresh() {
 }
 
 // ------------- 3) Endpoint para LO2: frontdoor -------
+const LIGHTNING_OUT_APP_ID = '1UsAW00000001490AA';
+
 app.get('/api/lo2/frontdoor', async (req, res) => {
   try {
     const { access_token, instance_url } = await getAccessTokenFromRefresh();
 
     const body = new URLSearchParams({
-      access_token: access_token
+      access_token: access_token,
+      lightning_out_app_id: LIGHTNING_OUT_APP_ID
     });
 
     const singleResp = await fetch(
@@ -193,7 +196,21 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
       }
     );
 
-    const singleData = await singleResp.json();
+    /*
+      Importante:
+      Salesforce a veces devuelve texto plano como "Invalid_Param",
+      no JSON. Por eso no uses directamente singleResp.json().
+    */
+    const responseText = await singleResp.text();
+
+    let singleData;
+    try {
+      singleData = JSON.parse(responseText);
+    } catch (e) {
+      singleData = {
+        rawResponse: responseText
+      };
+    }
 
     if (!singleResp.ok) {
       log('❌ lightningoutsingleaccess KO:', singleResp.status, singleData);
@@ -207,13 +224,14 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
     const frontdoorUrl = singleData.frontdoor_uri || singleData.frontdoorUrl;
 
     if (!frontdoorUrl) {
+      log('⚠️ Respuesta sin frontdoor_uri:', singleData);
       return res.status(500).json({
         error: 'no_frontdoor_in_response',
         data: singleData
       });
     }
 
-    log('✅ LO2 frontdoorUrl generado:', frontdoorUrl);
+    log('✅ LO2 frontdoorUrl generado');
 
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('Pragma', 'no-cache');
@@ -222,7 +240,10 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
 
   } catch (e) {
     log('💥 Error en /api/lo2/frontdoor:', e.message);
-    res.status(500).json({ error: 'server_error', message: e.message });
+    res.status(500).json({
+      error: 'server_error',
+      message: e.message
+    });
   }
 });
 
