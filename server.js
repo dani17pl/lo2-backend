@@ -178,21 +178,30 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
   try {
     const { access_token, instance_url } = await getAccessTokenFromRefresh();
 
-    const body = new URLSearchParams();
-
-    const singleResp = await fetch(`${instance_url}/services/oauth2/singleaccess`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: body.toString()
+    const body = new URLSearchParams({
+      access_token: access_token
     });
+
+    const singleResp = await fetch(
+      `${instance_url}/services/oauth2/lightningoutsingleaccess`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: body.toString()
+      }
+    );
 
     const singleData = await singleResp.json();
 
     if (!singleResp.ok) {
-      return res.status(500).json(singleData);
+      log('❌ lightningoutsingleaccess KO:', singleResp.status, singleData);
+      return res.status(500).json({
+        error: 'lightningoutsingleaccess_failed',
+        status: singleResp.status,
+        detail: singleData
+      });
     }
 
     const frontdoorUrl = singleData.frontdoor_uri || singleData.frontdoorUrl;
@@ -203,6 +212,8 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
         data: singleData
       });
     }
+
+    log('✅ LO2 frontdoorUrl generado:', frontdoorUrl);
 
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('Pragma', 'no-cache');
