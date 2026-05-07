@@ -216,3 +216,44 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
 app.listen(PORT, () => {
   log(`Servidor escuchando en puerto ${PORT}`);
 });
+
+app.get('/debug/frontdoor-open', async (req, res) => {
+  try {
+    const { access_token, instance_url } = await getAccessTokenFromRefresh();
+
+    const body = new URLSearchParams({
+      redirect_uri: '/lightning/page/home'
+    });
+
+    const singleResp = await fetch(`${instance_url}/services/oauth2/singleaccess`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    });
+
+    const singleData = await singleResp.json();
+
+    if (!singleResp.ok) {
+      log('❌ singleaccess KO:', singleResp.status, singleData);
+      return res.status(500).json(singleData);
+    }
+
+    const frontdoorUrl = singleData.frontdoor_uri || singleData.frontdoorUrl;
+
+    if (!frontdoorUrl) {
+      return res.status(500).json({
+        error: 'no_frontdoor_in_response',
+        data: singleData
+      });
+    }
+
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.redirect(302, frontdoorUrl);
+  } catch (e) {
+    log('💥 Error en /debug/frontdoor-open:', e.message);
+    res.status(500).send(e.message);
+  }
+});
