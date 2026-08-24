@@ -1,4 +1,4 @@
-// server.js - Lightning Out 2.0 + Salesforce JWT Bearer Flow (PROD)
+// server.js - Lightning Out 2.0 + Salesforce JWT Bearer Flow + Experience Cloud
 import express from 'express';
 import dotenv from 'dotenv';
 import crypto from 'node:crypto';
@@ -11,6 +11,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+function normalizeUrl(url) {
+  return url ? url.replace(/\/+$/, '') : url;
+}
+
+// -----------------------------------------------------------------------------
 // CORS
 // -----------------------------------------------------------------------------
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'https://hoteles-lightningout.web.app')
@@ -19,12 +26,22 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'https://hoteles-lightnin
   .filter(Boolean);
 
 // -----------------------------------------------------------------------------
-// Salesforce PROD / JWT
+// Salesforce PROD / JWT / Experience Cloud
 // -----------------------------------------------------------------------------
-const LOGIN_URL = process.env.SF_LOGIN_URL || 'https://login.salesforce.com';
+
+// Endpoint utilizado para obtener el access_token mediante JWT.
+// Actualmente puede mantenerse apuntando al Experience Site porque el JWT ya
+// está funcionando correctamente con esta configuración.
+const LOGIN_URL = normalizeUrl(process.env.SF_LOGIN_URL || 'https://login.salesforce.com');
+
+// Experience Cloud Site utilizado para crear la sesión aislada del Site.
+const SITE_URL = normalizeUrl(process.env.SF_SITE_URL || 'https://pghsa.my.site.com');
+
 const CLIENT_ID = process.env.SF_CLIENT_ID;
 const USERNAME = process.env.SF_USERNAME;
-const LIGHTNING_OUT_APP_ID = process.env.SF_LIGHTNING_OUT_APP_ID || '1UsaT00000000cjSAA';
+
+// Nueva Lightning Out 2.0 App vinculada al Experience Site.
+const LIGHTNING_OUT_APP_ID = process.env.SF_LIGHTNING_OUT_APP_ID || '1UsaT00000000eLSAQ';
 
 // En Render se recomienda SF_PRIVATE_KEY.
 // Para desarrollo local también se admite SF_PRIVATE_KEY_PATH.
@@ -38,9 +55,12 @@ function log(...args) {
 function requireConfig() {
   const missing = [];
 
+  if (!LOGIN_URL) missing.push('SF_LOGIN_URL');
+  if (!SITE_URL) missing.push('SF_SITE_URL');
   if (!CLIENT_ID) missing.push('SF_CLIENT_ID');
   if (!USERNAME) missing.push('SF_USERNAME');
   if (!LIGHTNING_OUT_APP_ID) missing.push('SF_LIGHTNING_OUT_APP_ID');
+
   if (!PRIVATE_KEY_ENV && !PRIVATE_KEY_PATH) {
     missing.push('SF_PRIVATE_KEY o SF_PRIVATE_KEY_PATH');
   }
@@ -53,7 +73,7 @@ function requireConfig() {
 function getPrivateKey() {
   if (PRIVATE_KEY_ENV) {
     // Permite guardar el secreto en Render con saltos de línea reales
-    // o como una sola línea usando \\n.
+    // o como una sola línea usando \n.
     return PRIVATE_KEY_ENV.replace(/\\n/g, '\n').trim();
   }
 
@@ -72,6 +92,9 @@ function base64url(input) {
     .replace(/\//g, '_');
 }
 
+// -----------------------------------------------------------------------------
+// JWT Assertion
+// -----------------------------------------------------------------------------
 function createJwtAssertion() {
   const now = Math.floor(Date.now() / 1000);
 
@@ -96,11 +119,12 @@ function createJwtAssertion() {
   signer.end();
 
   const signature = signer.sign(getPrivateKey());
+
   return `${unsignedToken}.${base64url(signature)}`;
 }
 
 // -----------------------------------------------------------------------------
-// OAuth JWT Bearer: access_token Salesforce
+// OAuth JWT Bearer: obtener access_token Salesforce
 // -----------------------------------------------------------------------------
 async function getAccessTokenFromJwt() {
   requireConfig();
@@ -112,7 +136,11 @@ async function getAccessTokenFromJwt() {
     assertion
   });
 
-  const response = await fetch(`${LOGIN_URL}/services/oauth2/token`, {
+  const tokenUrl = `${LOGIN_URL}/services/oauth2/token`;
+
+  log('Solicitando access_token JWT en:', tokenUrl);
+
+  const response = await fetch(tokenUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded'
@@ -141,17 +169,20 @@ async function getAccessTokenFromJwt() {
   log('✅ JWT Bearer OK:', {
     instance_url: data.instance_url,
     scope: data.scope,
-    user: USERNAME
+    user: USERNAME,
+    sfdc_site_url: data.sfdc_site_url || data.sfdc_community_url || null,
+    sfdc_site_id: data.sfdc_site_id || null
   });
 
   return {
     access_token: data.access_token,
-    instance_url: data.instance_url
+    instance_url: data.instance_url,
+    scope: data.scope
   };
 }
 
 // -----------------------------------------------------------------------------
-// Middleware
+// Middleware CORS
 // -----------------------------------------------------------------------------
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -180,6 +211,7 @@ app.get('/', (req, res) => {
     service: 'Lightning Out 2.0 backend',
     auth: 'Salesforce JWT Bearer Flow',
     loginUrl: LOGIN_URL,
+    siteUrl: SITE_URL,
     lightningOutAppId: LIGHTNING_OUT_APP_ID
   });
 });
@@ -189,27 +221,50 @@ app.get('/health', (req, res) => {
 });
 
 // -----------------------------------------------------------------------------
-// Frontdoor Lightning Out 2.0
+// Frontdoor Lightning Out 2.0 mediante Experience Cloud
 // -----------------------------------------------------------------------------
 app.get('/api/lo2/frontdoor', async (req, res) => {
   try {
-    const { access_token, instance_url } = await getAccessTokenFromJwt();
+    // -------------------------------------------------------------------------
+    // 1. Obtener access_token mediante JWT Bearer
+    // -------------------------------------------------------------------------
+    const { access_token, scope } = await getAccessTokenFromJwt();
+
+    if (scope && !scope.split(' ').includes('web') && !scope.split(' ').includes('full')) {
+      throw new Error(`El access_token no contiene scope web/full. Scope recibido: ${scope}`);
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. Generar una nueva sesión UI en el Experience Cloud Site
+    //
+    // IMPORTANTE:
+    // Ya NO utilizamos:
+    //
+    //   instance_url/services/oauth2/lightningoutsingleaccess
+    //
+    // porque eso crea el frontdoor en el contexto de la org.
+    //
+    // Utilizamos:
+    //
+    //   SITE_URL/services/oauth2/singleaccess
+    //
+    // para crear el frontdoor en el Experience Cloud Site.
+    // -------------------------------------------------------------------------
+    const bridgeUrl = `${SITE_URL}/services/oauth2/singleaccess`;
+
+    log('UI Bridge Experience Site:', bridgeUrl);
 
     const body = new URLSearchParams({
-      access_token,
-      lightning_out_app_id: LIGHTNING_OUT_APP_ID
+      access_token
     });
 
-    const singleResp = await fetch(
-      `${instance_url}/services/oauth2/lightningoutsingleaccess`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: body.toString()
-      }
-    );
+    const singleResp = await fetch(bridgeUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    });
 
     const responseText = await singleResp.text();
     let singleData;
@@ -221,9 +276,10 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
     }
 
     if (!singleResp.ok) {
-      log('❌ lightningoutsingleaccess KO:', singleResp.status, singleData);
+      log('❌ Experience Site singleaccess KO:', singleResp.status, singleData);
+
       return res.status(502).json({
-        error: 'lightningoutsingleaccess_failed',
+        error: 'experience_site_singleaccess_failed',
         status: singleResp.status,
         detail: singleData
       });
@@ -232,20 +288,28 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
     const frontdoorUrl = singleData.frontdoor_uri || singleData.frontdoorUrl;
 
     if (!frontdoorUrl) {
-      log('❌ Respuesta sin frontdoor_uri:', singleData);
+      log('❌ Respuesta de Experience Site sin frontdoor_uri:', singleData);
+
       return res.status(502).json({
         error: 'no_frontdoor_in_response',
         data: singleData
       });
     }
 
-    // La frontdoor URI equivale a una credencial temporal. No se cachea ni se loguea.
+    // -------------------------------------------------------------------------
+    // 3. No cachear ni registrar la frontdoor_uri
+    // -------------------------------------------------------------------------
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
 
-    log('✅ frontdoorUrl de Lightning Out 2.0 generado');
-    return res.json({ frontdoorUrl });
+    log('✅ frontdoorUrl de Experience Cloud generado');
+    log('✅ Lightning Out App ID:', LIGHTNING_OUT_APP_ID);
+
+    return res.json({
+      frontdoorUrl
+    });
+
   } catch (error) {
     log('💥 Error en /api/lo2/frontdoor:', error.message);
 
@@ -256,9 +320,13 @@ app.get('/api/lo2/frontdoor', async (req, res) => {
   }
 });
 
+// -----------------------------------------------------------------------------
+// Start
+// -----------------------------------------------------------------------------
 app.listen(PORT, () => {
   log(`Servidor escuchando en puerto ${PORT}`);
-  log(`Salesforce login: ${LOGIN_URL}`);
+  log(`Salesforce login JWT: ${LOGIN_URL}`);
+  log(`Experience Cloud Site: ${SITE_URL}`);
   log(`Usuario JWT: ${USERNAME || '(sin configurar)'}`);
   log(`Lightning Out App ID: ${LIGHTNING_OUT_APP_ID}`);
 });
